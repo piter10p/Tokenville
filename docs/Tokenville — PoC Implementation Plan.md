@@ -13,15 +13,15 @@ Success criteria:
 - Six scripted agents run 2,000 ticks headless; with 8 bushes they survive, with 3 bushes some starve.
 - The same seed and config always produce a byte-identical event log.
 - The `Observation` of any agent at any tick can be dumped as JSON.
-- Swapping the scripted brain for an Ollama-backed brain requires no change to `Sim.Core`.
+- Swapping the scripted brain for an Ollama-backed brain requires no change to `Tokenville.Core`.
 
 ## Architecture and solution layout
 
-The solution has four .NET 10 projects with `Sim.Core` at the bottom: a pure, dependency-free engine that everything else references.
+The solution has four .NET 10 projects with `Tokenville.Core` at the bottom: a pure, dependency-free engine that everything else references.
 
 &#91;embedded content: solution layout · 4 projects, 1 external service\]
 
-Arrows are project references or calls. Only `Sim.Brains` talks to the model; the engine never sees an LLM, a clock or a thread.
+Arrows are project references or calls. Only `Tokenville.Brains` talks to the model; the engine never sees an LLM, a clock or a thread.
 
 | Concern | Choice |
 | --- | --- |
@@ -38,15 +38,15 @@ Scaffolding:
 mkdir Tokenville && cd Tokenville
 dotnet new sln -n Tokenville
 dotnet new gitignore
-dotnet new classlib -n Sim.Core   -o src/Sim.Core   -f net10.0
-dotnet new classlib -n Sim.Brains -o src/Sim.Brains -f net10.0
-dotnet new console  -n Sim.Runner -o src/Sim.Runner -f net10.0
-dotnet new xunit    -n Sim.Core.Tests -o tests/Sim.Core.Tests -f net10.0
-dotnet sln add src/Sim.Core src/Sim.Brains src/Sim.Runner tests/Sim.Core.Tests
-dotnet add src/Sim.Brains reference src/Sim.Core
-dotnet add src/Sim.Runner reference src/Sim.Core src/Sim.Brains
-dotnet add tests/Sim.Core.Tests reference src/Sim.Core
-dotnet add src/Sim.Runner package Spectre.Console
+dotnet new classlib -n Tokenville.Core   -o src/Tokenville.Core   -f net10.0
+dotnet new classlib -n Tokenville.Brains -o src/Tokenville.Brains -f net10.0
+dotnet new console  -n Tokenville.Runner -o src/Tokenville.Runner -f net10.0
+dotnet new xunit    -n Tokenville.Core.Tests -o tests/Tokenville.Core.Tests -f net10.0
+dotnet sln add src/Tokenville.Core src/Tokenville.Brains src/Tokenville.Runner tests/Tokenville.Core.Tests
+dotnet add src/Tokenville.Brains reference src/Tokenville.Core
+dotnet add src/Tokenville.Runner reference src/Tokenville.Core src/Tokenville.Brains
+dotnet add tests/Tokenville.Core.Tests reference src/Tokenville.Core
+dotnet add src/Tokenville.Runner package Spectre.Console
 ```
 
 ## World specification
@@ -126,7 +126,7 @@ Config is loaded from JSON by the runner; the engine receives it as an immutable
 The engine never calls a brain. It exposes observations and accepts decisions; the runner shuttles between them. This boundary is the only place an LLM plugs in, so it is frozen after phase 2.
 
 ```csharp
-// Sim.Core
+// Tokenville.Core
 public sealed record Observation(
     long Tick,
     AgentSelf Self,                         // id, name, position, hunger, current action
@@ -147,7 +147,7 @@ Observation Observe(EntityId agentId);
 void Submit(EntityId agentId, AgentDecision decision);
 void Step();
 
-// Sim.Brains
+// Tokenville.Brains
 public interface IAgentBrain
 {
     Task<AgentDecision> DecideAsync(Observation observation, CancellationToken ct);
@@ -169,9 +169,9 @@ Four phases, each merged only when its acceptance criteria pass. Phases 1 and 2 
 
 ### Phase 0 — Scaffolding
 
-- [ ] Create the solution: `Sim.Core`, `Sim.Brains`, `Sim.Runner`, `Sim.Core.Tests` on `net10.0`, references as in the architecture section.
+- [ ] Create the solution: `Tokenville.Core`, `Tokenville.Brains`, `Tokenville.Runner`, `Tokenville.Core.Tests` on `net10.0`, references as in the architecture section.
 - [ ] Enable nullable reference types and treat warnings as errors in every project.
-- [ ] Add `Spectre.Console` to `Sim.Runner`.
+- [ ] Add `Spectre.Console` to `Tokenville.Runner`.
 
 Accepted when `dotnet build` and `dotnet test` succeed on a clean clone.
 
@@ -204,7 +204,7 @@ Accepted when the determinism and replay tests pass and the contract types carry
 
 ### Phase 3 — LLM brain
 
-- [ ] Add `Microsoft.Extensions.AI` and `OllamaSharp` to `Sim.Brains`.
+- [ ] Add `Microsoft.Extensions.AI` and `OllamaSharp` to `Tokenville.Brains`.
 - [ ] `LlmBrain : IAgentBrain` taking an `IChatClient`; model name and endpoint from config.
 - [ ] Prompt builder: static system prompt (rules, action list) first, then a compact text rendering of the observation.
 - [ ] Structured output: a JSON schema with an `action` enum plus `targetId`, `x`, `y`, `ticks`, `reason`; parse and validate against the observation.
@@ -217,18 +217,18 @@ Accepted when 6 LLM agents run 500 ticks against a local Ollama model with a fal
 
 Determinism is the top priority: any change that breaks the determinism test is rejected, whatever it adds.
 
-### Determinism in `Sim.Core`
+### Determinism in `Tokenville.Core`
 
 - One seeded `Random` owned by the world; never `Random.Shared` or an unseeded `new Random()`.
 - Iterate entities in ascending id order (`SortedDictionary` or explicit sort); never rely on `Dictionary` or `HashSet` order.
 - Integer math only in rules; no `float` or `double`.
 - No wall-clock time (`DateTime`, `Stopwatch`) in the engine; time is `World.Tick`.
-- No `async`, threads, I/O or logging frameworks in `Sim.Core`. The engine returns events; the runner writes them.
+- No `async`, threads, I/O or logging frameworks in `Tokenville.Core`. The engine returns events; the runner writes them.
 - JSON output uses fixed property order and invariant culture.
 
 ### Code
 
-- `Sim.Core` has no package dependencies.
+- `Tokenville.Core` has no package dependencies.
 - Prefer immutable records for value types, events, observations and decisions; mutable state lives only in `World` and its entities.
 - World state changes only inside `World.Step()`; `Observe` is read-only.
 - No speculative abstraction: no ECS, plugin systems or generic rule engines.
