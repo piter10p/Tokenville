@@ -23,6 +23,9 @@ public sealed class Agent : IEntity
     /// <summary>0 = full, 100 = dead.</summary>
     public int Hunger { get; internal set; }
 
-    // ponytail: typed as object until the actions change defines the action type.
-    public object? CurrentAction { get; internal set; }
+    /// <summary>The running action, or null when the agent is idle and awaiting a decision.</summary>
+    public AgentAction? CurrentAction { get; internal set; }
+
+    /// <summary>How the most recent action ended; null until the first one ends.</summary>
+    public ActionResult? LastAction { get; internal set; }
 }
