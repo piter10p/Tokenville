@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines how entities are identified and located on the grid, and how a freshly created world places its agents and bushes from the seed so that the same config always yields the same starting layout.
+Defines how entities are identified and located with fixed-point positions over the tile grid, and how a freshly created world places its agents and bushes from the seed so that the same config always yields the same starting layout.
 
 ## ADDED Requirements
 
@@ -26,15 +26,31 @@ Every entity SHALL have an id made of an entity kind (agent or bush) and a posit
 - **THEN** the order is `agent-1`, `agent-2`, `agent-10`
 
 ### Requirement: Positions and distance
-A position SHALL be an integer pair `(x, y)` with `(0, 0)` the top-left tile. The distance between two positions SHALL be the Manhattan distance, `|x1 - x2| + |y1 - y2|`, computed with integer arithmetic.
+A position SHALL be an integer pair `(x, y)` in sub-tile units with 256 units per tile and `(0, 0)` the top-left corner of the top-left tile. Tile `(tx, ty)` SHALL span units `[tx*256, (tx+1)*256)` on each axis; the tile index of a position SHALL be `units / 256` rounded down, and the center of tile `(tx, ty)` SHALL be `(tx*256 + 128, ty*256 + 128)`. The distance between two positions SHALL be the Euclidean distance `sqrt(dx² + dy²)` rounded down to an integer, computed with integer arithmetic only. A squared distance SHALL be available so range checks can compare without taking a root. No floating-point arithmetic SHALL be used.
 
-#### Scenario: Distance
-- **WHEN** the distance from `(1, 2)` to `(4, 6)` is computed
-- **THEN** the result is 7
+#### Scenario: Distance on a 3-4-5 triangle
+- **WHEN** the distance from `(0, 0)` to `(768, 1024)` is computed
+- **THEN** the result is 1280
+
+#### Scenario: Distance rounds down
+- **WHEN** the distance from `(0, 0)` to `(1, 1)` is computed
+- **THEN** the result is 1
 
 #### Scenario: Distance is symmetric and zero at self
-- **WHEN** the distance from `(4, 6)` to `(1, 2)` and from `(3, 3)` to `(3, 3)` are computed
-- **THEN** the results are 7 and 0
+- **WHEN** the distance from `(768, 1024)` to `(0, 0)` and from `(5, 5)` to `(5, 5)` are computed
+- **THEN** the results are 1280 and 0
+
+#### Scenario: Squared distance
+- **WHEN** the squared distance from `(0, 0)` to `(1, 1)` is computed
+- **THEN** the result is 2
+
+#### Scenario: Tile center
+- **WHEN** the center position of tile `(13, 2)` is requested
+- **THEN** the position is `(3456, 640)`
+
+#### Scenario: Tile index
+- **WHEN** the tile index is taken for positions `(3583, 0)` and `(3584, 0)`
+- **THEN** the tile x indices are 13 and 14
 
 ### Requirement: Entities expose id and position
 Every agent and every bush SHALL expose its id and its current position through one common read-only view, so callers can locate any entity without knowing its kind.
@@ -44,7 +60,7 @@ Every agent and every bush SHALL expose its id and its current position through 
 - **THEN** it can read each one's id and position without casting to the concrete kind
 
 ### Requirement: Seeded initial placement
-Creating a world from a configuration SHALL place exactly `BushCount` bushes and then exactly `AgentCount` agents using only a random generator seeded with `Seed`. Bush ids SHALL be `bush-1` through `bush-<BushCount>` and agent ids `agent-1` through `agent-<AgentCount>`, numbered in placement order. No two bushes SHALL share a tile. No agent SHALL start on a bush tile. Agents MAY share a tile with other agents. Every position SHALL be within `0 <= x < Width` and `0 <= y < Height`.
+Creating a world from a configuration SHALL place exactly `BushCount` bushes and then exactly `AgentCount` agents using only a random generator seeded with `Seed`. Bush ids SHALL be `bush-1` through `bush-<BushCount>` and agent ids `agent-1` through `agent-<AgentCount>`, numbered in placement order. A bush's position SHALL be the center of its tile. No two bushes SHALL share a tile. Each agent SHALL spawn at the center of a tile that holds no bush. Agents MAY share a tile with other agents. Every position SHALL be within `0 <= x < Width * 256` and `0 <= y < Height * 256`.
 
 #### Scenario: Counts and ids
 - **WHEN** a world is created with `AgentCount` 6 and `BushCount` 8
@@ -52,11 +68,11 @@ Creating a world from a configuration SHALL place exactly `BushCount` bushes and
 
 #### Scenario: Bushes never overlap
 - **WHEN** a world is created with any seed on a 4x4 grid with `BushCount` 16
-- **THEN** every tile holds exactly one bush
+- **THEN** the bush positions are the 16 distinct tile centers of the grid
 
 #### Scenario: Agents avoid bushes
 - **WHEN** a world is created on a 4x4 grid with `BushCount` 15 and `AgentCount` 6
-- **THEN** every agent is on the single bush-free tile
+- **THEN** every agent is at the center of the single bush-free tile
 
 #### Scenario: Same seed, same layout
 - **WHEN** two worlds are created from identical configurations
