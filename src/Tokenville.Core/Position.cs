@@ -11,6 +11,12 @@ public readonly record struct Position(int X, int Y)
     /// <summary>Units per tile. Tile index is <c>units >> 8</c>, sub-tile offset is <c>units &amp; 255</c>.</summary>
     public const int TileSize = 256;
 
+    /// <summary>Units an agent moves per tick: one tile. A constant, not config, as the plan says.</summary>
+    public const int Speed = 256;
+
+    /// <summary>Distance from a bush center within which it can be eaten from: one tile.</summary>
+    public const int Reach = 256;
+
     public int TileX => X >> 8;
     public int TileY => Y >> 8;
 
