@@ -51,21 +51,23 @@ dotnet add src/Tokenville.Runner package Spectre.Console
 
 ## World specification
 
-The world is an empty 32×32 grid holding two entity kinds, agents and berry bushes, and one need: hunger. There is no inventory, health, speech or terrain.
+The world is an empty 32×32 grid of tiles with two layers, Minecraft-style: berry bushes are blocks welded to the grid, agents are entities that move freely over it. There is one need: hunger. There is no inventory, health, speech or terrain.
 
 ### Map
 
-- Square grid, default 32×32, coordinates `(x, y)` with `(0, 0)` top-left.
-- 4-directional movement; distance is Manhattan.
-- No obstacles. Multiple agents may share a tile; a bush blocks its own tile.
-- Bushes and agents are placed at setup using the seeded RNG, never two bushes on one tile.
+- Square grid of tiles, default 32×32, tile coordinates `(x, y)` with `(0, 0)` top-left.
+- Positions are fixed-point integers in sub-tile units, `TileSize` = 256 units per tile. Tile `(x, y)` spans units `[x·256, (x+1)·256)` on each axis; its center is `(x·256 + 128, y·256 + 128)`. Tile index is `units >> 8`, sub-tile offset is `units & 255`. Never `float` or `double`.
+- Blocks (bushes) occupy a whole tile and their position is the tile center. Entities (agents, later animals) have sub-tile positions and move in any direction.
+- Distance is Euclidean: `isqrt(dx² + dy²)` with an integer square root, squared terms in `long`. Range checks compare squared distances and never take a root. Distances shown to brains are whole tiles (`units / TileSize`).
+- Agents do not collide with each other. A bush blocks its own tile: an agent never ends a tick inside one.
+- Bushes and agents are placed at setup using the seeded RNG, never two bushes on one tile; agents spawn at the center of a bush-free tile.
 
 ### Entities
 
 | Entity | Fields | Notes |
 | --- | --- | --- |
-| Agent | `Id` (`agent-1`), `Name`, `Position`, `Hunger` (int 0–100, 0 = full), `CurrentAction` | removed from the world when hunger reaches 100 |
-| BerryBush | `Id` (`bush-1`), `Position`, `Berries` (int 0–max), regrow counter | used from an orthogonally adjacent tile |
+| Agent | `Id` (`agent-1`), `Name`, `Position` (sub-tile units), `Hunger` (int 0–100, 0 = full), `CurrentAction` | moves `Speed` = 256 units (one tile) per tick; removed from the world when hunger reaches 100 |
+| BerryBush | `Id` (`bush-1`), `Position` (its tile center), `Berries` (int 0–max), regrow counter | occupies one tile; used from within `Reach` = 256 units (one tile) of its center |
 
 Ids are stable, readable strings because they appear in LLM prompts. Agent names come from a fixed list indexed by agent number.
 
@@ -73,11 +75,11 @@ Ids are stable, readable strings because they appear in LLM prompts. Agent names
 
 | Action | Duration | Preconditions | Effect on completion |
 | --- | --- | --- | --- |
-| `MoveTo(targetId)` or `MoveTo(x, y)` | 1 tick per tile | target exists and is in bounds | agent ends adjacent to the entity, or on the tile |
-| `Eat(bushId)` | `EatTicks` (5) | agent adjacent to the bush; bush has ≥ 1 berry at start | bush −1 berry, agent hunger −`BerryNutrition` (min 0) |
+| `MoveTo(targetId)` or `MoveTo(x, y)` | until arrival, `Speed` units per tick | target exists; tile `(x, y)` is in bounds and not a bush | agent ends within `Reach` of the entity, or at the center of tile `(x, y)` |
+| `Eat(bushId)` | `EatTicks` (5) | agent within `Reach` of the bush; bush has ≥ 1 berry at start | bush −1 berry, agent hunger −`BerryNutrition` (min 0) |
 | `Wait(ticks)` | n (1–50) | none | nothing |
 
-`MoveTo` steps along x first, then y. Preconditions are checked when the action starts; `Eat` re-checks the bush when it completes. Every action ends as `Completed`, `Failed(reason)` or `Interrupted`. Failures are normal outcomes reported to the agent, never exceptions.
+`MoveTo` moves in a straight line. Each tick, with `d = isqrt(dx² + dy²)` from the agent to the target point: if `d ≤ Speed` the agent arrives exactly; otherwise it moves by `(dx·Speed / d, dy·Speed / d)` using integer division and recomputes from its new position next tick, so rounding never accumulates. `MoveTo(x, y)` targets the tile center. `MoveTo(targetId)` targets the entity's position and completes as soon as the agent is within `Reach`; with `Reach` = one tile that always happens before the agent would enter a bush tile. A step that would end inside a bush tile fails with `Failed("blocked by bush-k")` and the agent stays where it was; there is no pathfinding, and a step that crosses a bush tile's corner without ending inside it is allowed. Preconditions are checked when the action starts; `Eat` re-checks the bush when it completes. Every action ends as `Completed`, `Failed(reason)` or `Interrupted`. Failures are normal outcomes reported to the agent, never exceptions.
 
 ### Rules
 
@@ -88,10 +90,15 @@ Ids are stable, readable strings because they appear in LLM prompts. Agent names
 | Berry nutrition | −25 hunger |
 | Bush capacity | `BushMaxBerries` (5), bushes start full |
 | Bush regrowth | +1 berry every `BushRegrowTicks` (40) while below max |
-| Perception radius | `PerceptionRadius` (5), Manhattan |
+| Perception radius | `PerceptionRadius` (5) tiles, Euclidean |
+| Tile size | `TileSize` = 256 units, constant |
+| Movement speed | `Speed` = 256 units (one tile) per tick, constant |
+| Reach | `Reach` = 256 units (one tile), constant |
 | Hunger alert thresholds | 50 and 80 |
 
-Calibration: an agent needs one berry per \~50 ticks and a bush yields one per 40, so one bush sustains about 1.25 agents in steady state. With 6 agents, 8 bushes should be survivable and 3 should not. Use this to sanity-check the engine.
+Calibration: an agent needs one berry per \~50 ticks and a bush yields one per 40, so one bush sustains about 1.25 agents in steady state. With 6 agents, 8 bushes should be survivable and 3 should not. Use this to sanity-check the engine. Travel is Euclidean, so trips are a little shorter than on a 4-directional grid; the calibration still holds.
+
+`TileSize`, `Speed` and `Reach` are constants in `Tokenville.Core`, not config: nothing in the PoC varies them. Per-entity speed arrives with animals, after the PoC.
 
 ### Tick pipeline
 
@@ -106,7 +113,7 @@ Calibration: an agent needs one berry per \~50 ticks and a bush yields one per 4
 
 ### Events
 
-`AgentMoved`, `ActionStarted`, `ActionCompleted`, `ActionFailed`, `ActionInterrupted`, `AgentAte`, `BushRegrew`, `HungerThresholdCrossed`, `AgentDied`. Each event carries `Tick`, the subject id and a position where relevant.
+`AgentMoved`, `ActionStarted`, `ActionCompleted`, `ActionFailed`, `ActionInterrupted`, `AgentAte`, `BushRegrew`, `HungerThresholdCrossed`, `AgentDied`. Each event carries `Tick`, the subject id and, where relevant, a position in sub-tile units (the log is exact engine state; tile rounding happens only in `Observation`).
 
 ### Config
 
@@ -129,9 +136,9 @@ The engine never calls a brain. It exposes observations and accepts decisions; t
 // Tokenville.Core
 public sealed record Observation(
     long Tick,
-    AgentSelf Self,                         // id, name, position, hunger, current action
-    IReadOnlyList<VisibleBush> Bushes,      // id, position, berries, distance
-    IReadOnlyList<VisibleAgent> Agents,     // id, name, position, distance, current action kind
+    AgentSelf Self,                         // id, name, tile position, hunger, current action
+    IReadOnlyList<VisibleBush> Bushes,      // id, tile position, berries, distance in tiles
+    IReadOnlyList<VisibleAgent> Agents,     // id, name, tile position, distance in tiles, current action kind
     IReadOnlyList<WorldEvent> RecentEvents, // perceived since this agent's last decision
     ActionResult? LastAction,               // outcome + reason of the previous action
     int WorldWidth, int WorldHeight);
@@ -157,6 +164,7 @@ public interface IAgentBrain
 Rules for the boundary:
 
 - `Observation` is pure data and serializes to JSON. Converting it to prompt text is the LLM brain's job, not the engine's.
+- Brains never see sub-tile units. Positions in `Observation` and `AgentDecision` are tile coordinates (`units / TileSize`), distances are whole tiles, and `MoveTo(x, y)` means the center of that tile. The engine converts both ways, so the engine can change its position resolution without touching the contract.
 - An agent sees bushes and agents within `PerceptionRadius`, and only events whose position is within that radius.
 - `Submit` never throws on a bad decision; the action fails at the next `Step` with a readable reason.
 - `Reason` is logged but has no effect on the world.
@@ -177,13 +185,13 @@ Accepted when `dotnet build` and `dotnet test` succeed on a clean clone.
 
 ### Phase 1 — Engine and scripted brains
 
-- [ ] Value types: `EntityId`, `Position`, Manhattan distance.
+- [ ] Value types: `EntityId`, fixed-point `Position` (sub-tile units, tile conversion), integer square root and Euclidean distance.
 - [ ] `WorldConfig` and JSON loading in the runner.
 - [ ] `World` setup: seeded placement of agents and bushes.
 - [ ] Actions `MoveTo`, `Eat`, `Wait` with start, progress, complete, fail and interrupt.
 - [ ] `World.Step()` implementing the tick pipeline exactly as specified.
 - [ ] Event model and an append-only event list per tick.
-- [ ] `ScriptedBrain`: eat from the nearest visible bush with berries when hunger ≥ 30, otherwise move to a random in-bounds tile, using a per-agent seeded RNG.
+- [ ] `ScriptedBrain`: eat from the nearest visible bush with berries when hunger ≥ 30, otherwise move to a random in-bounds, bush-free tile, using a per-agent seeded RNG.
 - [ ] Runner: lockstep loop, JSONL event log, ASCII map with a stats panel every N ticks, exit on all-dead or max ticks.
 
 Accepted when:
@@ -221,7 +229,7 @@ Determinism is the top priority: any change that breaks the determinism test is 
 
 - One seeded `Random` owned by the world; never `Random.Shared` or an unseeded `new Random()`.
 - Iterate entities in ascending id order (`SortedDictionary` or explicit sort); never rely on `Dictionary` or `HashSet` order.
-- Integer math only in rules; no `float` or `double`.
+- Integer math only; no `float` or `double`. Positions are fixed-point integers (`TileSize` units per tile), squared distances use `long`, and square roots use an integer `isqrt`, never `Math.Sqrt`.
 - No wall-clock time (`DateTime`, `Stopwatch`) in the engine; time is `World.Tick`.
 - No `async`, threads, I/O or logging frameworks in `Tokenville.Core`. The engine returns events; the runner writes them.
 - JSON output uses fixed property order and invariant culture.
@@ -248,6 +256,6 @@ Determinism is the top priority: any change that breaks the determinism test is 
 
 ## Out of scope and future extensions
 
-Do not implement any of these in the PoC: inventory, health, speech, obstacles or terrain, multiple resource types, crafting, building, combat, day/night, agent memory or reflection, asynchronous (non-lockstep) scheduling, graphical visualization and cloud LLM providers.
+Do not implement any of these in the PoC: inventory, health, speech, obstacles or terrain, pathfinding around bushes, agent–agent collision, per-entity speeds, multiple resource types, crafting, building, combat, day/night, agent memory or reflection, asynchronous (non-lockstep) scheduling, graphical visualization and cloud LLM providers.
 
-Likely next steps after the PoC, roughly in this order: thirst with water tiles (a second need in a different place), speech between nearby agents, inventory with giving, per-agent memory in the LLM brain, then asynchronous scheduling where the world keeps ticking while agents think. Keep the design open to these, but do not build for them now.
+Likely next steps after the PoC, roughly in this order: thirst with water tiles (a second need in a different place), animals as entities with their own speed, speech between nearby agents, inventory with giving, per-agent memory in the LLM brain, then asynchronous scheduling where the world keeps ticking while agents think. Keep the design open to these, but do not build for them now.
