@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Tokenville.Core\Tokenville.Core.csproj" />
+    <ProjectReference Include="..\Tokenville.Brains\Tokenville.Brains.csproj" />
   </ItemGroup>
 
 </Project>

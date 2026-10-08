@@ -70,6 +70,41 @@ public sealed class World
         if (_agents.ContainsKey(agentId)) _pending[agentId] = decision;
     }
 
+    /// <summary>
+    /// What <paramref name="agentId"/> perceives right now: itself, bushes and other agents within
+    /// <see cref="WorldConfig.PerceptionRadius"/> (Euclidean, inclusive) in ascending id order, in tile units.
+    /// Read-only. Throws for an id that is not a living agent; the runner only observes ids it got from
+    /// <see cref="AgentsAwaitingDecision"/>.
+    /// </summary>
+    public Observation Observe(EntityId agentId)
+    {
+        if (!_agents.TryGetValue(agentId, out var self))
+            throw new ArgumentException($"{agentId} is not a living agent.", nameof(agentId));
+
+        var radius = (long)Config.PerceptionRadius * Position.TileSize;
+        var bushes = new List<VisibleBush>();
+        foreach (var b in _bushes.Values)
+            if (self.Position.DistanceSquaredTo(b.Position) <= radius * radius)
+                bushes.Add(new VisibleBush(b.Id, b.Position.TileX, b.Position.TileY, b.Berries, TileDistance(self, b)));
+
+        var agents = new List<VisibleAgent>();
+        foreach (var a in _agents.Values)
+            if (a != self && self.Position.DistanceSquaredTo(a.Position) <= radius * radius)
+                agents.Add(new VisibleAgent(a.Id, a.Name, a.Position.TileX, a.Position.TileY, TileDistance(self, a), a.CurrentAction?.Kind));
+
+        return new Observation(
+            Tick,
+            new AgentSelf(self.Id, self.Name, self.Position.TileX, self.Position.TileY, self.Hunger, self.CurrentAction?.Kind),
+            bushes,
+            agents,
+            [],
+            self.LastAction,
+            Config.Width,
+            Config.Height);
+    }
+
+    private static int TileDistance(IEntity from, IEntity to) => from.Position.DistanceTo(to.Position) / Position.TileSize;
+
     /// <summary>Advances the world one tick and returns the events of that tick, in emission order.</summary>
     public IReadOnlyList<WorldEvent> Step()
     {

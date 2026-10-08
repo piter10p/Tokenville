@@ -18,11 +18,19 @@ A brain SHALL take an observation and return a decision asynchronously, and a sc
 - **THEN** at least one of the 20 decision pairs differs
 
 ### Requirement: Eat when hungry
-When the agent's hunger is at least 30 and at least one visible bush has berries, the brain SHALL pick the nearest such bush (smallest whole-tile distance, lowest id on a tie). If its distance is 0 the brain SHALL decide `Eat` on it; otherwise it SHALL decide `MoveTo` on it. Bushes with no berries SHALL be ignored for this rule.
+When the agent's hunger is at least 30 and at least one visible bush has berries, the brain SHALL pick the nearest such bush (smallest whole-tile distance, lowest id on a tie). If its distance is at most 1 and the agent's last action did not fail as out of reach, the brain SHALL decide `Eat` on it; otherwise it SHALL decide `MoveTo` on it. Bushes with no berries SHALL be ignored for this rule.
 
 #### Scenario: Eat in reach
 - **WHEN** hunger is 30 and `bush-2` with 3 berries is at distance 0
 - **THEN** the decision is `Eat` targeting `bush-2`
+
+#### Scenario: Eat at distance 1
+- **WHEN** hunger is 30 and `bush-2` with 3 berries is at distance 1
+- **THEN** the decision is `Eat` targeting `bush-2`
+
+#### Scenario: Walk after an out-of-reach failure
+- **WHEN** hunger is 30, `bush-2` with berries is at distance 1 and the last action failed with `bush-2 is out of reach`
+- **THEN** the decision is `MoveTo` targeting `bush-2`
 
 #### Scenario: Walk to food
 - **WHEN** hunger is 45 and the only bush with berries, `bush-1`, is at distance 3
