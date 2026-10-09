@@ -3,148 +3,128 @@ using static Tokenville.Core.Tests.TestWorld;
 
 namespace Tokenville.Core.Tests;
 
-/// <summary>Brain rules on hand-built observations; no world involved.</summary>
 public class ScriptedBrainTests
 {
-    private static Observation Observe(
-        int hunger, (int X, int Y) at = default, (string Id, int X, int Y, int Berries, int Distance)[]? bushes = null,
-        ActionResult? last = null, int width = 9, int height = 9) =>
-        new(0,
-            new AgentSelf(Id("agent-1"), "Ada", at.X, at.Y, hunger, null),
-            (bushes ?? []).Select(b => new VisibleBush(Id(b.Id), b.X, b.Y, b.Berries, b.Distance)).ToList(),
-            [], [], last, width, height);
-
-    private static AgentDecision Decide(ScriptedBrain brain, Observation o) =>
-        brain.DecideAsync(o, CancellationToken.None).GetAwaiter().GetResult();
-
-    private static AgentDecision Decide(Observation o) => Decide(new ScriptedBrain(1), o);
-
-    private static readonly ActionResult Blocked = new(ActionKind.MoveTo, ActionOutcome.Failed, "blocked by bush-4");
-
-    // Eat when hungry
+    private static ScriptedBrain Brain(int seed = 42, int agent = 1) => new(seed, agent);
 
     [Fact]
-    public void Eat_in_reach()
+    public void Hungry_and_in_reach_eats()
     {
-        var d = Decide(Observe(30, bushes: [("bush-2", 1, 1, 3, 0)]));
-        Assert.Equal((ActionKind.Eat, "bush-2"), (d.Action, d.TargetId));
+        var w = Layout(agents: [(Tile(0, 0), 30)], bushes: [(Tile(1, 0), 2)]);
+        var d = Brain().Decide(w, w.Agent("agent-1"));
+        Assert.Equal((ActionKind.Eat, "bush-1"), (d.Action, d.TargetId));
     }
 
     [Fact]
-    public void Eat_at_distance_1()
+    public void Hungry_and_out_of_reach_moves_to_the_bush()
     {
-        var d = Decide(Observe(30, bushes: [("bush-2", 1, 0, 3, 1)]));
-        Assert.Equal((ActionKind.Eat, "bush-2"), (d.Action, d.TargetId));
-    }
-
-    [Fact]
-    public void Walk_after_out_of_reach()
-    {
-        var outOfReach = new ActionResult(ActionKind.Eat, ActionOutcome.Failed, "bush-2 is out of reach");
-        var d = Decide(Observe(30, bushes: [("bush-2", 1, 1, 3, 1)], last: outOfReach));
-        Assert.Equal((ActionKind.MoveTo, "bush-2"), (d.Action, d.TargetId));
-    }
-
-    [Fact]
-    public void Walk_to_food()
-    {
-        var d = Decide(Observe(45, bushes: [("bush-1", 3, 0, 2, 3)]));
+        var w = Layout(agents: [(Tile(0, 0), 60)], bushes: [(Tile(5, 0), 2)]);
+        var d = Brain().Decide(w, w.Agent("agent-1"));
         Assert.Equal((ActionKind.MoveTo, "bush-1"), (d.Action, d.TargetId));
         Assert.Null(d.X);
+        Assert.Null(d.Y);
     }
 
     [Fact]
-    public void Nearest_wins_ties_by_id()
+    public void Empty_bushes_are_ignored()
     {
-        var d = Decide(Observe(60, bushes: [("bush-1", 1, 0, 1, 1), ("bush-2", 0, 1, 1, 1), ("bush-3", 2, 0, 1, 2)]));
-        Assert.Equal("bush-1", d.TargetId);
-    }
-
-    [Fact]
-    public void Empty_bush_is_skipped()
-    {
-        var d = Decide(Observe(60, bushes: [("bush-1", 0, 0, 0, 0), ("bush-2", 4, 0, 1, 4)]));
+        var w = Layout(agents: [(Tile(0, 0), 60)], bushes: [(Tile(1, 0), 0), (Tile(6, 0), 1)]);
+        var d = Brain().Decide(w, w.Agent("agent-1"));
         Assert.Equal((ActionKind.MoveTo, "bush-2"), (d.Action, d.TargetId));
     }
 
-    // Wander otherwise
+    [Fact]
+    public void Ties_go_to_the_lower_id()
+    {
+        var w = Layout(agents: [(Tile(4, 0), 60)], bushes: [(Tile(0, 0), 1), (Tile(8, 0), 1)]);
+        Assert.Equal("bush-1", Brain().Decide(w, w.Agent("agent-1")).TargetId);
+    }
 
     [Fact]
-    public void Not_hungry_wanders()
+    public void Hunger_29_beside_food_is_not_eat()
     {
-        var brain = new ScriptedBrain(3);
-        for (var i = 0; i < 50; i++)
+        var w = Layout(agents: [(Tile(0, 0), 29)], bushes: [(Tile(1, 0), 2)]);
+        var d = Brain().Decide(w, w.Agent("agent-1"));
+        Assert.Equal(ActionKind.MoveTo, d.Action);
+        Assert.NotNull(d.X);
+    }
+
+    [Fact]
+    public void Wander_targets_are_in_bounds_and_bush_free()
+    {
+        var w = Layout(Grid9 with { Width = 3, Height = 3 }, agents: [(Tile(0, 0), 0)], bushes: [(Tile(1, 1), 5)]);
+        var brain = Brain();
+        for (var i = 0; i < 200; i++)
         {
-            var d = Decide(brain, Observe(29, bushes: [("bush-1", 0, 0, 5, 0)]));
+            var d = brain.Decide(w, w.Agent("agent-1"));
             Assert.Equal(ActionKind.MoveTo, d.Action);
             Assert.Null(d.TargetId);
-            Assert.InRange(d.X!.Value, 0, 8);
-            Assert.InRange(d.Y!.Value, 0, 8);
-            Assert.NotEqual((0, 0), (d.X.Value, d.Y.Value));
+            Assert.InRange(d.X!.Value, 0, 2);
+            Assert.InRange(d.Y!.Value, 0, 2);
+            Assert.NotEqual((1, 1), (d.X.Value, d.Y.Value));
         }
     }
 
     [Fact]
-    public void Hungry_but_blind_wanders()
+    public void No_berries_anywhere_wanders()
     {
-        var d = Decide(Observe(70));
+        var w = Layout(agents: [(Tile(0, 0), 90)], bushes: [(Tile(1, 0), 0)]);
+        var d = Brain().Decide(w, w.Agent("agent-1"));
         Assert.Equal(ActionKind.MoveTo, d.Action);
-        Assert.InRange(d.X!.Value, 0, 8);
-        Assert.InRange(d.Y!.Value, 0, 8);
+        Assert.Null(d.TargetId);
+        Assert.NotEqual((1, 0), (d.X!.Value, d.Y!.Value));
     }
 
     [Fact]
-    public void Visible_bushes_are_avoided()
+    public void Blocked_sidesteps_below()
     {
-        var o = Observe(10, bushes: [("bush-1", 0, 0, 5, 0), ("bush-2", 1, 0, 5, 1), ("bush-3", 0, 1, 5, 1)], width: 2, height: 2);
-        var d = Decide(o);
-        Assert.Equal((1, 1), (d.X, d.Y));
-    }
-
-    // Sidestep after a blocked move
-
-    [Fact]
-    public void Blocked_while_hungry_steps_aside()
-    {
-        var d = Decide(Observe(80, at: (3, 3), last: Blocked));
-        Assert.Equal(ActionKind.MoveTo, d.Action);
-        Assert.Contains((d.X!.Value, d.Y!.Value), new[] { (3, 4), (3, 2), (4, 3), (2, 3) });
+        var w = Layout(agents: [(Tile(3, 3), 0)], bushes: [(Tile(5, 3), 5)]);
+        w.Agent("agent-1").LastAction = new ActionResult(ActionKind.MoveTo, ActionOutcome.Failed, "blocked by bush-1");
+        var d = Brain().Decide(w, w.Agent("agent-1"));
+        Assert.Equal((ActionKind.MoveTo, 3, 4, "sidestep"), (d.Action, d.X, d.Y, d.Reason));
     }
 
     [Fact]
-    public void Blocked_neighbours_are_excluded()
+    public void Blocked_sidesteps_above_when_below_is_a_bush()
     {
-        var d = Decide(Observe(80, at: (0, 0), bushes: [("bush-1", 1, 0, 2, 1)], last: Blocked));
-        Assert.Equal((ActionKind.MoveTo, 0, 1), (d.Action, d.X, d.Y));
+        var w = Layout(agents: [(Tile(3, 3), 0)], bushes: [(Tile(5, 3), 5), (Tile(3, 4), 5)]);
+        w.Agent("agent-1").LastAction = new ActionResult(ActionKind.MoveTo, ActionOutcome.Failed, "blocked by bush-1");
+        var d = Brain().Decide(w, w.Agent("agent-1"));
+        Assert.Equal((ActionKind.MoveTo, 3, 2), (d.Action, d.X, d.Y));
     }
 
     [Fact]
-    public void Boxed_in_waits()
+    public void Boxed_in_waits_one_tick()
     {
-        var d = Decide(Observe(80, at: (0, 0), bushes: [("bush-1", 1, 0, 2, 1), ("bush-2", 0, 1, 2, 1)], last: Blocked));
+        var w = Layout(Grid9 with { Width = 3, Height = 3 },
+            agents: [(Tile(1, 1), 0)],
+            bushes: [(Tile(1, 2), 5), (Tile(1, 0), 5), (Tile(2, 1), 5), (Tile(0, 1), 5)]);
+        w.Agent("agent-1").LastAction = new ActionResult(ActionKind.MoveTo, ActionOutcome.Failed, "blocked by bush-1");
+        var d = Brain().Decide(w, w.Agent("agent-1"));
         Assert.Equal((ActionKind.Wait, 1), (d.Action, d.Ticks));
     }
-
-    // Brain contract
 
     [Fact]
     public void Same_seed_same_decisions()
     {
-        var a = new ScriptedBrain(7);
-        var b = new ScriptedBrain(7);
-        for (var i = 0; i < 100; i++)
-        {
-            var o = i % 3 == 0 ? Observe(80, at: (4, 4), last: Blocked) : Observe(i % 2 == 0 ? 10 : 70);
-            Assert.Equal(Decide(a, o), Decide(b, o));
-        }
+        var a = Layout(agents: [(Tile(0, 0), 0)], bushes: [(Tile(4, 4), 5)]);
+        var b = Layout(agents: [(Tile(0, 0), 0)], bushes: [(Tile(4, 4), 5)]);
+        var (ba, bb) = (Brain(), Brain());
+        var da = Enumerable.Range(0, 100).Select(_ => ba.Decide(a, a.Agent("agent-1"))).ToList();
+        var db = Enumerable.Range(0, 100).Select(_ => bb.Decide(b, b.Agent("agent-1"))).ToList();
+        Assert.Equal(da, db);
+        Assert.True(da.Select(d => (d.X, d.Y)).Distinct().Count() > 1, "wander targets should vary");
     }
 
     [Fact]
-    public void Different_seeds_diverge()
+    public void Every_decision_has_a_reason()
     {
-        var a = new ScriptedBrain(7);
-        var b = new ScriptedBrain(8);
-        var o = Observe(10);
-        Assert.Contains(Enumerable.Range(0, 20), _ => Decide(a, o) != Decide(b, o));
+        var w = Layout(agents: [(Tile(0, 0), 60)], bushes: [(Tile(1, 0), 2)]);
+        var brain = Brain();
+        Assert.False(string.IsNullOrEmpty(brain.Decide(w, w.Agent("agent-1")).Reason));
+        w.Bush("bush-1").Berries = 0;
+        Assert.False(string.IsNullOrEmpty(brain.Decide(w, w.Agent("agent-1")).Reason));
+        w.Agent("agent-1").LastAction = new ActionResult(ActionKind.MoveTo, ActionOutcome.Failed, "blocked by bush-1");
+        Assert.False(string.IsNullOrEmpty(brain.Decide(w, w.Agent("agent-1")).Reason));
     }
 }

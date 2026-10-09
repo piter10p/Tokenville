@@ -3,69 +3,80 @@ using Tokenville.Core;
 namespace Tokenville.Brains;
 
 /// <summary>
-/// The Phase 1 policy: step aside after a blocked move, eat from the nearest visible bush with berries
-/// when hunger is 30 or more (walking there first if needed), otherwise wander to a random bush-free tile.
-/// One instance per agent, seeded from the world seed plus the agent number so runs are reproducible.
-/// Decides from the observation alone.
+/// The plan's model-free brain: eat from the nearest bush with berries when hungry, otherwise wander to a random
+/// bush-free tile. One instance per agent, each with its own seeded RNG. Reads <see cref="World"/> directly until
+/// <c>Observation</c> exists (Phase 2), so it sees every bush; the policy ports unchanged.
 /// </summary>
-public sealed class ScriptedBrain(int seed) : IAgentBrain
+public sealed class ScriptedBrain
 {
-    private const int HungryAt = 30;
+    /// <summary>Hunger at or above which the agent goes for food. Fixed by the plan, not config.</summary>
+    public const int HungerThreshold = 30;
 
-    private readonly Random _rng = new(seed);
+    private const long ReachSquared = (long)Position.Reach * Position.Reach;
+    private readonly Random _rng;
 
-    public Task<AgentDecision> DecideAsync(Observation observation, CancellationToken ct) =>
-        Task.FromResult(Decide(observation));
+    /// <summary>
+    /// Seeds the RNG as <c>worldSeed * 1000 + agentNumber</c>, unchecked. An explicit formula, never
+    /// <c>HashCode.Combine</c>, which is randomized per process and would break determinism silently.
+    /// </summary>
+    public ScriptedBrain(int worldSeed, int agentNumber) =>
+        _rng = new Random(unchecked(worldSeed * 1000 + agentNumber));
 
-    private AgentDecision Decide(Observation o)
+    /// <summary>Rules in priority order: sidestep after a blocked move, go for food when hungry, otherwise wander.</summary>
+    public AgentDecision Decide(World world, Agent agent)
     {
-        if (o.LastAction is { Outcome: ActionOutcome.Failed, Reason: { } reason } && reason.StartsWith("blocked", StringComparison.Ordinal))
-            return Sidestep(o);
+        if (agent.LastAction is { Outcome: ActionOutcome.Failed, Reason: { } reason }
+            && reason.StartsWith("blocked by", StringComparison.Ordinal))
+            return Sidestep(world, agent);
 
-        if (o.Self.Hunger >= HungryAt)
-        {
-            // Bushes arrive in ascending id order and OrderBy is stable, so ties go to the lowest id.
-            var food = o.Bushes.Where(b => b.Berries > 0).OrderBy(b => b.Distance).FirstOrDefault();
-            if (food is not null)
-            {
-                // Tile distance 1 spans 256..511 units and reach is 256, so distance 1 may or may not be in reach.
-                // Try to eat at distance <= 1; if the engine says "out of reach", walk there next tick. The walk
-                // ends within reach, so the eat after it succeeds.
-                var outOfReach = o.LastAction is { Outcome: ActionOutcome.Failed, Reason: { } r } && r.EndsWith("out of reach", StringComparison.Ordinal);
-                return food.Distance <= 1 && !outOfReach
-                    ? new AgentDecision(ActionKind.Eat, food.Id.ToString(), null, null, null, "hungry, food in reach")
-                    : new AgentDecision(ActionKind.MoveTo, food.Id.ToString(), null, null, null, "hungry, walking to food");
-            }
-        }
+        if (agent.Hunger >= HungerThreshold && NearestWithBerries(world, agent) is { } bush)
+            return agent.Position.DistanceSquaredTo(bush.Position) <= ReachSquared
+                ? new AgentDecision(ActionKind.Eat, bush.Id.ToString(), null, null, null, "eat")
+                : new AgentDecision(ActionKind.MoveTo, bush.Id.ToString(), null, null, null, "hungry");
 
-        return Wander(o);
+        return Wander(world);
     }
 
-    private AgentDecision Sidestep(Observation o)
+    /// <summary>First free tile of below, above, right, left. Fixed order so the sidestep never touches the RNG.</summary>
+    private static AgentDecision Sidestep(World world, Agent agent)
     {
-        var (x, y) = (o.Self.X, o.Self.Y);
-        var free = new List<(int X, int Y)>(4);
+        var (x, y) = (agent.Position.TileX, agent.Position.TileY);
         foreach (var (nx, ny) in new[] { (x, y + 1), (x, y - 1), (x + 1, y), (x - 1, y) })
-            if (nx >= 0 && ny >= 0 && nx < o.WorldWidth && ny < o.WorldHeight && !BushAt(o, nx, ny))
-                free.Add((nx, ny));
-        if (free.Count == 0)
-            return new AgentDecision(ActionKind.Wait, null, null, null, 1, "blocked and boxed in");
-        var (sx, sy) = free[_rng.Next(free.Count)];
-        return new AgentDecision(ActionKind.MoveTo, null, sx, sy, null, "stepping aside after a blocked move");
+            if (nx >= 0 && ny >= 0 && nx < world.Config.Width && ny < world.Config.Height && !HasBush(world, nx, ny))
+                return new AgentDecision(ActionKind.MoveTo, null, nx, ny, null, "sidestep");
+        return new AgentDecision(ActionKind.Wait, null, null, null, 1, "boxed-in");
     }
 
-    private AgentDecision Wander(Observation o)
+    /// <summary>Ascending-id scan with a strict comparison, so ties go to the lower id.</summary>
+    private static BerryBush? NearestWithBerries(World world, Agent agent)
     {
-        // ponytail: redraw until the tile holds no visible bush; at most ~81 visible tiles can be bushes, so this
-        // ends fast. Unseen bushes are the engine's problem: the move fails at start and we redraw next tick.
-        int x, y;
-        do
+        BerryBush? best = null;
+        var bestD2 = long.MaxValue;
+        foreach (var bush in world.Bushes)
         {
-            x = _rng.Next(o.WorldWidth);
-            y = _rng.Next(o.WorldHeight);
-        } while (BushAt(o, x, y));
-        return new AgentDecision(ActionKind.MoveTo, null, x, y, null, "wandering");
+            if (bush.Berries < 1) continue;
+            var d2 = agent.Position.DistanceSquaredTo(bush.Position);
+            if (d2 < bestD2) (best, bestD2) = (bush, d2);
+        }
+        return best;
     }
 
-    private static bool BushAt(Observation o, int x, int y) => o.Bushes.Any(b => b.X == x && b.Y == y);
+    /// <summary>Draw x then y, redraw while the tile holds a bush, as the world's own placement does. The world guarantees a free tile.</summary>
+    private AgentDecision Wander(World world)
+    {
+        while (true)
+        {
+            var x = _rng.Next(world.Config.Width);
+            var y = _rng.Next(world.Config.Height);
+            if (!HasBush(world, x, y)) return new AgentDecision(ActionKind.MoveTo, null, x, y, null, "wander");
+        }
+    }
+
+    private static bool HasBush(World world, int tileX, int tileY)
+    {
+        var center = Position.FromTileCenter(tileX, tileY);
+        foreach (var bush in world.Bushes)
+            if (bush.Position == center) return true;
+        return false;
+    }
 }
